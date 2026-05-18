@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trello & Harvest Time Visualizer</title>
+
+    <!-- Dependencies -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- PapaParse for easy CSV processing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body { background-color: #f3f4f6; color: #1f2937; }
+        .progress-bar-striped {
+            background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+            background-size: 1rem 1rem;
+        }
+    </style>
+</head>
+<body class="font-sans antialiased min-h-screen">
+
+    <div id="app" class="max-w-7xl mx-auto p-4 md:p-8">
+        
+        <!-- ========================================== -->
+        <!-- SETUP VIEW -->
+        <!-- ========================================== -->
+        <div v-if="!showDashboard" class="max-w-2xl mx-auto mt-10">
+            <div class="bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-100">
+                <div class="bg-blue-600 p-8 text-center text-white">
+                    <i class="fa-solid fa-chart-pie text-5xl mb-4"></i>
+                    <h1 class="text-3xl font-bold">Time Visualizer</h1>
+                    <p class="text-blue-100 mt-2">Merge Trello estimates with Harvest actuals.</p>
+                </div>
+                
+                <div class="p-8 space-y-8">
+                    <!-- Step 1: Trello -->
+                    <div>
+                        <h2 class="text-lg font-bold text-gray-800 mb-2 flex items-center gap-2">
+                            <span class="bg-blue-100 text-blue-600 w-6 h-6 rounded-full flex items-center justify-center text-sm">1</span> 
+                            Upload Trello Board JSON
+                        </h2>
+                        <label class="block w-full border-2 border-dashed border-gray-300 rounded-xl p-6 text-center cursor-pointer hover:bg-gray-50 transition" :class="{'bg-green-50 border-green-400': trelloFile}">
+                            <i class="fa-brands fa-trello text-2xl mb-2" :class="trelloFile ? 'text-green-500' : 'text-blue-500'"></i>
+                            <div class="font-medium text-gray-700">{{ trelloFile ? trelloFile.name : 'Click to select JSON file' }}</div>
+                            <input type="file" accept=".json" class="hidden" @change="handleTrelloUpload">
+                        </label>
+                    </div>
+
+                    <!-- Step 2: User Selection (Appears after Trello upload) -->
+                    <transition name="fade">
+                        <div v-if="members.length > 0">
+                            <h2 class="text-lg font-bold text-gray-800 mb-2 flex items-center gap-2">
+                                <span class="bg-blue-100 text-blue-600 w-6 h-6 rounded-full flex items-center justify-center text-sm">2</span> 
+                                Select Your Trello User
+                            </h2>
+                            <select v-model="selectedMemberId" class="w-full border-gray-300 border p-3 rounded-lg shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white">
+                                <option disabled value="">-- Choose User --</option>
+                                <option v-for="member in members" :key="member.id" :value="member.id">
+                                    {{ member.fullName }} (@{{ member.username }})
+                                </option>
+                            </select>
+                        </div>
+                    </transition>
+
+                    <!-- Step 3: Harvest -->
+                    <div>
+                        <h2 class="text-lg font-bold text-gray-800 mb-2 flex items-center gap-2">
+                            <span class="bg-blue-100 text-blue-600 w-6 h-6 rounded-full flex items-center justify-center text-sm">3</span> 
+                            Upload Harvest CSV Report
+                        </h2>
+                        
+                        <!-- Disclaimer Alert -->
+                        <div class="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4 rounded-r-lg">
+                            <div class="flex">
+                                <div class="flex-shrink-0">
+                                    <i class="fa-solid fa-triangle-exclamation text-amber-500"></i>
+                                </div>
+                                <div class="ml-3">
+                                    <p class="text-sm text-amber-800">
+                                        <strong>Important Note:</strong> For this visualizer to successfully match your time entries to your assigned Trello cards, you must have the Trello card's shortlink (e.g., <code>yVNFFbOP</code>) added to your Harvest time entry notes.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <label class="block w-full border-2 border-dashed border-gray-300 rounded-xl p-6 text-center cursor-pointer hover:bg-gray-50 transition" :class="{'bg-green-50 border-green-400': harvestFile}">
+                            <i class="fa-solid fa-file-csv text-2xl mb-2" :class="harvestFile ? 'text-green-500' : 'text-orange-500'"></i>
+                            <div class="font-medium text-gray-700">{{ harvestFile ? harvestFile.name : 'Click to select CSV file' }}</div>
+                            <input type="file" accept=".csv" class="hidden" @change="handleHarvestUpload">
+                        </label>
+                    </div>
+
+                    <!-- Generate Button -->
+                    <button @click="generateDashboard" :disabled="!canGenerate" class="w-full py-4 rounded-xl font-bold text-lg text-white shadow-lg transition-all" :class="canGenerate ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-300 cursor-not-allowed'">
+                        Generate Dashboard
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- DASHBOARD VIEW -->
+        <!-- ========================================== -->
+        <div v-else>
+            <!-- Header Row -->
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 border-b border-gray-300 pb-6">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-900">{{ boardInfo.name || 'Board Report' }}</h1>
+                    <p class="text-gray-500 text-sm mt-1">
+                        Performance Analysis for <span class="font-bold text-gray-700">{{ getSelectedMemberName() }}</span>
+                    </p>
+                </div>
+                <button @click="resetApp" class="px-4 py-2 bg-white border border-gray-300 rounded-lg shadow-sm text-gray-700 hover:bg-gray-50 font-medium">
+                    <i class="fa-solid fa-arrow-left mr-2"></i> Start Over
+                </button>
+            </div>
+
+            <!-- KPI Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
+                        <i class="fa-solid fa-list-check"></i>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold text-gray-900">{{ dashboardCards.length }}</div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wider font-bold">Assigned Cards</div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center text-xl">
+                        <i class="fa-solid fa-crosshairs"></i>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold text-gray-900">{{ summary.totalPoints }}</div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wider font-bold">Total Points</div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full bg-gray-50 text-gray-600 flex items-center justify-center text-xl">
+                        <i class="fa-solid fa-bullseye"></i>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold text-gray-900">{{ summary.totalEstimatedHours }}h</div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wider font-bold">Estimated Max Time</div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full flex items-center justify-center text-xl" :class="summary.totalActualHours <= summary.totalEstimatedHours ? 'bg-green-50 text-green-500' : 'bg-red-50 text-red-500'">
+                        <i class="fa-solid fa-clock"></i>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold text-gray-900" :class="summary.totalActualHours <= summary.totalEstimatedHours ? 'text-green-600' : 'text-red-600'">
+                            {{ summary.totalActualHours }}h
+                        </div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wider font-bold">Actual Time Logged</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- List Breakdown & Charts -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                
+                <!-- Status/List Breakdown -->
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 lg:col-span-2">
+                    <h3 class="font-bold text-gray-800 mb-4 pb-2 border-b">Time Distribution by List</h3>
+                    <div class="space-y-4">
+                        <div v-for="list in listBreakdown" :key="list.id">
+                            <div class="flex justify-between items-center mb-1 text-sm font-medium">
+                                <span class="text-gray-700">{{ list.name }} <span class="text-gray-400 font-normal">({{ list.cardCount }} cards)</span></span>
+                                <span>{{ list.actualHours }}h <span class="text-gray-400 font-normal">/ {{ list.estHours }}h</span></span>
+                            </div>
+                            <div class="w-full bg-gray-100 rounded-full h-2 overflow-hidden flex">
+                                <div class="bg-blue-500 h-2 transition-all" :style="{ width: list.estHours > 0 ? Math.min((list.actualHours / list.estHours) * 100, 100) + '%' : '0%' }"></div>
+                                <div v-if="list.actualHours > list.estHours" class="bg-red-500 h-2 transition-all progress-bar-striped" :style="{ width: Math.min(((list.actualHours - list.estHours) / list.actualHours) * 100, 100) + '%' }"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Efficiency Overview -->
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col items-center justify-center">
+                    <h3 class="font-bold text-gray-800 mb-4 pb-2 border-b w-full text-center">Budget Health</h3>
+                    
+                    <div class="relative w-40 h-40">
+                        <canvas id="budgetChart"></canvas>
+                        <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none mt-2">
+                            <span class="text-2xl font-bold" :class="summary.cardsOverBudget > 0 ? 'text-red-500' : 'text-green-500'">
+                                {{ summary.cardsOverBudget }}
+                            </span>
+                            <span class="text-[10px] text-gray-500 uppercase font-bold text-center leading-tight">Cards Over<br>Budget</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Card Level Details -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+                    <h3 class="font-bold text-gray-800">Assigned Card Breakdown</h3>
+                    <div class="text-xs text-gray-500">Only showing cards with estimated or logged time.</div>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b">
+                                <th class="p-4 font-semibold">Card Name</th>
+                                <th class="p-4 font-semibold w-32">List</th>
+                                <th class="p-4 font-semibold text-center w-24">Points</th>
+                                <th class="p-4 font-semibold w-64">Actual vs Estimated</th>
+                                <th class="p-4 font-semibold text-right w-24">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <tr v-for="card in sortedDashboardCards" :key="card.id" class="hover:bg-gray-50 transition-colors">
+                                <td class="p-4">
+                                    <div class="font-medium text-gray-800 line-clamp-2" :title="card.name">{{ card.name }}</div>
+                                    <div class="text-[10px] text-gray-400 font-mono mt-1">ID: {{ card.shortLink }}</div>
+                                </td>
+                                <td class="p-4 text-sm text-gray-600 truncate max-w-[120px]" :title="card.listName">
+                                    <span class="bg-gray-100 border px-2 py-0.5 rounded text-xs">{{ card.listName }}</span>
+                                </td>
+                                <td class="p-4 text-center">
+                                    <span class="bg-blue-50 text-blue-700 font-bold px-2 py-1 rounded text-xs">
+                                        {{ card.points !== null ? card.points : '-' }}
+                                    </span>
+                                </td>
+                                <td class="p-4">
+                                    <div class="flex justify-between items-end mb-1 text-[10px] font-bold">
+                                        <span :class="card.actualHours > card.estHours ? 'text-red-600' : 'text-gray-600'">{{ card.actualHours }}h</span>
+                                        <span class="text-gray-400">Max: {{ card.estHours }}h</span>
+                                    </div>
+                                    <div class="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden flex">
+                                        <!-- Normal Progress -->
+                                        <div class="h-1.5 transition-all" 
+                                             :class="card.actualHours > card.estHours ? 'bg-red-500' : 'bg-green-500'" 
+                                             :style="{ width: card.estHours > 0 ? Math.min((card.actualHours / card.estHours) * 100, 100) + '%' : '0%' }">
+                                        </div>
+                                        <!-- Overflow Progress -->
+                                        <div v-if="card.actualHours > card.estHours" 
+                                             class="bg-red-300 h-1.5 progress-bar-striped" 
+                                             :style="{ width: Math.min(((card.actualHours - card.estHours) / card.actualHours) * 100, 100) + '%' }">
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="p-4 text-right">
+                                    <span v-if="card.actualHours === 0" class="text-xs text-gray-400 font-medium border border-gray-200 px-2 py-1 rounded">Untracked</span>
+                                    <span v-else-if="card.actualHours <= card.estHours" class="text-xs text-green-700 bg-green-50 border border-green-200 px-2 py-1 rounded font-bold">On Track</span>
+                                    <span v-else class="text-xs text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded font-bold">Over Budget</span>
+                                </td>
+                            </tr>
+                            <tr v-if="sortedDashboardCards.length === 0">
+                                <td colspan="5" class="p-8 text-center text-gray-500">No cards found with time logged or estimated.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, nextTick } = Vue;
+
+        createApp({
+            setup() {
+                // State
+                const showDashboard = ref(false);
+                const trelloFile = ref(null);
+                const harvestFile = ref(null);
+                const trelloDataRaw = ref(null);
+                const harvestDataRaw = ref([]);
+                const members = ref([]);
+                const selectedMemberId = ref("");
+                const dashboardCards = ref([]);
+                const boardInfo = ref({});
+
+                let budgetChartInstance = null;
+
+                // --- Input Handlers ---
+                const handleTrelloUpload = (event) => {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    trelloFile.value = file;
+
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const data = JSON.parse(e.target.result);
+                            trelloDataRaw.value = data;
+                            boardInfo.value = { name: data.name };
+                            members.value = data.members || [];
+                        } catch (err) {
+                            alert("Failed to parse Trello JSON. Make sure the file is a valid Trello Board Export.");
+                            trelloFile.value = null;
+                        }
+                    };
+                    reader.readAsText(file);
+                };
+
+                const handleHarvestUpload = (event) => {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    harvestFile.value = file;
+
+                    Papa.parse(file, {
+                        header: true,
+                        skipEmptyLines: true,
+                        complete: (results) => {
+                            harvestDataRaw.value = results.data;
+                        },
+                        error: (error) => {
+                            alert("Failed to parse CSV: " + error.message);
+                            harvestFile.value = null;
+                        }
+                    });
+                };
+
+                const canGenerate = computed(() => {
+                    return trelloDataRaw.value !== null && harvestDataRaw.value.length > 0 && selectedMemberId.value !== "";
+                });
+
+                const getSelectedMemberName = () => {
+                    const m = members.value.find(m => m.id === selectedMemberId.value);
+                    return m ? m.fullName : 'User';
+                };
+
+                const resetApp = () => {
+                    showDashboard.value = false;
+                    trelloFile.value = null;
+                    harvestFile.value = null;
+                    trelloDataRaw.value = null;
+                    harvestDataRaw.value = [];
+                    members.value = [];
+                    selectedMemberId.value = "";
+                    dashboardCards.value = [];
+                    if(budgetChartInstance) budgetChartInstance.destroy();
+                };
+
+                // --- Core Logic Helpers ---
+                const getPoints = (title) => {
+                    if(!title) return null;
+                    const match = title.match(/(?:--|-)\s*(\d+)\s*pts?/i);
+                    return match ? parseInt(match[1]) : null;
+                };
+
+                const getMaxHours = (pts) => {
+                    if (pts === null) return 0;
+                    if (pts === 0) return 1;
+                    if (pts === 1) return 5;
+                    if (pts === 2) return 10;
+                    if (pts === 3) return 15;
+                    return pts * 5;
+                };
+
+                // --- Processing Data ---
+                const generateDashboard = () => {
+                    if (!canGenerate.value) return;
+
+                    // 1. Create a List mapping dictionary
+                    const listsMap = {};
+                    (trelloDataRaw.value.lists || []).forEach(l => {
+                        listsMap[l.id] = l.name;
+                    });
+
+                    // 2. Filter Cards for User
+                    const myCards = (trelloDataRaw.value.cards || []).filter(c => 
+                        c.idMembers && c.idMembers.includes(selectedMemberId.value)
+                    );
+
+                    // 3. Process Cards vs Harvest
+                    const processed = myCards.map(card => {
+                        const pts = getPoints(card.name);
+                        const estHours = getMaxHours(pts);
+                        
+                        // Find Harvest actuals matching the shortLink
+                        const shortLink = card.shortLink;
+                        const actualHours = harvestDataRaw.value
+                            .filter(row => row.Notes && row.Notes.includes(shortLink))
+                            .reduce((sum, row) => sum + (parseFloat(row.Hours) || 0), 0);
+
+                        return {
+                            id: card.id,
+                            shortLink: shortLink,
+                            name: card.name,
+                            listId: card.idList,
+                            listName: listsMap[card.idList] || 'Unknown List',
+                            points: pts,
+                            estHours: estHours,
+                            actualHours: parseFloat(actualHours.toFixed(2))
+                        };
+                    });
+
+                    // Filter out cards that have no points AND no tracked time
+                    dashboardCards.value = processed.filter(c => c.estHours > 0 || c.actualHours > 0);
+                    showDashboard.value = true;
+
+                    nextTick(() => {
+                        renderCharts();
+                    });
+                };
+
+                // --- Computed Summaries ---
+                const sortedDashboardCards = computed(() => {
+                    return [...dashboardCards.value].sort((a, b) => {
+                        // Sort by largest discrepancy first (Over budget floats up)
+                        const diffA = a.actualHours - a.estHours;
+                        const diffB = b.actualHours - b.estHours;
+                        return diffB - diffA;
+                    });
+                });
+
+                const summary = computed(() => {
+                    let totalPoints = 0;
+                    let totalEstimatedHours = 0;
+                    let totalActualHours = 0;
+                    let cardsOverBudget = 0;
+                    let cardsOnBudget = 0;
+
+                    dashboardCards.value.forEach(c => {
+                        if (c.points !== null) totalPoints += c.points;
+                        totalEstimatedHours += c.estHours;
+                        totalActualHours += c.actualHours;
+                        
+                        if (c.actualHours > 0 || c.estHours > 0) {
+                            if (c.actualHours > c.estHours) cardsOverBudget++;
+                            else cardsOnBudget++;
+                        }
+                    });
+
+                    return {
+                        totalPoints,
+                        totalEstimatedHours: totalEstimatedHours.toFixed(1),
+                        totalActualHours: totalActualHours.toFixed(1),
+                        cardsOverBudget,
+                        cardsOnBudget
+                    };
+                });
+
+                const listBreakdown = computed(() => {
+                    const lMap = {};
+                    dashboardCards.value.forEach(c => {
+                        if (!lMap[c.listId]) {
+                            lMap[c.listId] = { id: c.listId, name: c.listName, estHours: 0, actualHours: 0, cardCount: 0 };
+                        }
+                        lMap[c.listId].estHours += c.estHours;
+                        lMap[c.listId].actualHours += c.actualHours;
+                        lMap[c.listId].cardCount++;
+                    });
+                    
+                    return Object.values(lMap)
+                        .map(l => ({...l, estHours: parseFloat(l.estHours.toFixed(1)), actualHours: parseFloat(l.actualHours.toFixed(1))}))
+                        .sort((a,b) => b.actualHours - a.actualHours); // sort by highest hours
+                });
+
+                // --- Charts ---
+                const renderCharts = () => {
+                    const ctx = document.getElementById('budgetChart');
+                    if (!ctx) return;
+
+                    budgetChartInstance = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['On Track / Under', 'Over Budget'],
+                            datasets: [{
+                                data: [summary.value.cardsOnBudget, summary.value.cardsOverBudget],
+                                backgroundColor: ['#10b981', '#ef4444'], // Green, Red
+                                borderWidth: 0,
+                                cutout: '70%'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: { enabled: true }
+                            }
+                        }
+                    });
+                };
+
+                return {
+                    showDashboard, trelloFile, harvestFile, members, selectedMemberId, boardInfo,
+                    dashboardCards, sortedDashboardCards, summary, listBreakdown, canGenerate,
+                    handleTrelloUpload, handleHarvestUpload, generateDashboard, getSelectedMemberName, resetApp
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
