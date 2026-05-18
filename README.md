@@ -56,3 +56,5 @@ This tool is built as a lightweight, single-file HTML document using:
 * [Tailwind CSS](https://tailwindcss.com/) (Styling)
 * [Chart.js](https://www.chartjs.org/) (Data visualization)
 * [PapaParse](https://www.papaparse.com/) (Client-side CSV parsing)
+
+Disclaimer: This was created with AI.
